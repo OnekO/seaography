@@ -860,7 +860,7 @@ macro_rules! m2m_processor {
             move |context: &'static BuilderContext,
                   db: &sea_orm::DatabaseConnection,
                   source_id: sea_orm::Value,
-                  input: &ObjectAccessor| {
+                  input: &ObjectAccessor| -> std::pin::Pin<Box<dyn std::future::Future<Output = seaography::SeaResult<()>> + Send + '_>> {
                 let source_col = $source_col;
                 let related_col = $related_col;
 
@@ -908,7 +908,7 @@ macro_rules! m2m_processor {
                         }
                     }
 
-                    Ok(()) as SeaResult<()>
+                    Ok(())
                 })
             },
         ) as seaography::RelationProcessorFn
