@@ -1,8 +1,9 @@
 ﻿use async_graphql::dynamic::{InputObject, InputValue, ObjectAccessor, TypeRef};
 use heck::ToLowerCamelCase;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel, QueryFilter,
+    sea_query::ColumnType, ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel, QueryFilter,
 };
+use uuid::Uuid;
 
 use crate::{BuilderContext, SeaResult};
 
@@ -60,14 +61,26 @@ pub fn parse_relation_operations(
     Ok(ops)
 }
 
-pub fn parse_id_to_value(id: &str) -> sea_orm::Value {
-    if let Ok(int_id) = id.parse::<i32>() {
-        return sea_orm::Value::Int(Some(int_id));
+pub fn parse_id_for_column<C>(column: C, raw: &str) -> SeaResult<sea_orm::Value>
+where
+    C: ColumnTrait,
+{
+    match column.def().get_column_type() {
+        ColumnType::Uuid => {
+            let uuid = Uuid::parse_str(raw)?;
+            Ok(sea_orm::Value::Uuid(Some(uuid)))
+        }
+        ColumnType::Integer => Ok(sea_orm::Value::Int(Some(raw.parse()?))),
+        ColumnType::BigInteger => Ok(sea_orm::Value::BigInt(Some(raw.parse()?))),
+        ColumnType::SmallInteger => Ok(sea_orm::Value::SmallInt(Some(raw.parse()?))),
+        ColumnType::TinyInteger => Ok(sea_orm::Value::TinyInt(Some(raw.parse()?))),
+        ColumnType::Unsigned => Ok(sea_orm::Value::Unsigned(Some(raw.parse()?))),
+        ColumnType::BigUnsigned => Ok(sea_orm::Value::BigUnsigned(Some(raw.parse()?))),
+        ColumnType::SmallUnsigned => Ok(sea_orm::Value::SmallUnsigned(Some(raw.parse()?))),
+        ColumnType::TinyUnsigned => Ok(sea_orm::Value::TinyUnsigned(Some(raw.parse()?))),
+        // Fallback for strings and anything else
+        _ => Ok(sea_orm::Value::String(Some(raw.to_string().into()))),
     }
-    if let Ok(int_id) = id.parse::<i64>() {
-        return sea_orm::Value::BigInt(Some(int_id));
-    }
-    sea_orm::Value::String(Some(id.to_string().into()))
 }
 
 pub type RelationProcessorFn = Box<
@@ -246,7 +259,7 @@ impl RelationMutationProcessor {
                 .await?;
 
             for related_id in set_ids {
-                let related_value = parse_id_to_value(&related_id);
+                let related_value = parse_id_for_column(related_column, &related_id)?;
                 self.create_junction_row::<J, JA>(
                     db,
                     source_column,
@@ -258,7 +271,7 @@ impl RelationMutationProcessor {
             }
         } else {
             for related_id in operations.connect {
-                let related_value = parse_id_to_value(&related_id);
+                let related_value = parse_id_for_column(related_column, &related_id)?;
                 let existing = J::find()
                     .filter(source_column.eq(source_id.clone()))
                     .filter(related_column.eq(related_value.clone()))
@@ -278,7 +291,7 @@ impl RelationMutationProcessor {
             }
 
             for related_id in operations.disconnect {
-                let related_value = parse_id_to_value(&related_id);
+                let related_value = parse_id_for_column(related_column, &related_id)?;
                 J::delete_many()
                     .filter(source_column.eq(source_id.clone()))
                     .filter(related_column.eq(related_value))

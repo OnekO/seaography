@@ -1,4 +1,5 @@
 use thiserror::Error;
+use uuid::Uuid;
 
 #[derive(Error, Debug)]
 pub enum SeaographyError {
@@ -8,6 +9,8 @@ pub enum SeaographyError {
     TryFromIntError(#[from] std::num::TryFromIntError),
     #[error("[parsing] {0}")]
     ParseIntError(#[from] std::num::ParseIntError),
+    #[error("[uuid] {0}")]
+    UuidParseError(#[from] uuid::Error),
     #[error("[type conversion: {1}] {0}")]
     TypeConversionError(String, String),
     #[error("[array conversion] postgres array can not be nested type of array")]
