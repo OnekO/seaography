@@ -59,6 +59,7 @@
 //! * Filter by related entities
 //! * Order by any column
 //! * Mutations (create, update, delete)
+//! * M2M relation mutations (connect, disconnect, set)
 //! * Guards and Filters on entity to restrict access
 //! * Choose between camel or snake case field names
 //!

@@ -16,6 +16,8 @@ pub enum SeaographyError {
     CustomFilterError(String),
     #[error("[async_graphql] {0:?}")]
     UploadError(async_graphql::InputValueError<async_graphql::Upload>),
+    #[error("[database] {0}")]
+    DbError(#[from] sea_orm::DbErr),
 }
 
 impl From<async_graphql::Error> for SeaographyError {

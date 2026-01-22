@@ -13,10 +13,10 @@ use crate::{
     CustomUnion, EdgeObjectBuilder, EntityCreateBatchMutationBuilder,
     EntityCreateOneMutationBuilder, EntityDeleteMutationBuilder, EntityInputBuilder,
     EntityObjectBuilder, EntityQueryFieldBuilder, EntityUpdateMutationBuilder, FilterInputBuilder,
-    FilterTypesMapHelper, HavingInputBuilder, OffsetInputBuilder, OneToManyLoader, OneToOneLoader,
-    OrderByEnumBuilder, OrderInputBuilder, PageInfoObjectBuilder, PageInputBuilder,
-    PaginationInfoObjectBuilder, PaginationInputBuilder, RelatedEntityFilter,
-    RelatedEntityFilterField,
+    FilterTypesMapHelper, HavingInputBuilder, M2MRelationProcessors, M2MRelations,
+    OffsetInputBuilder, OneToManyLoader, OneToOneLoader, OrderByEnumBuilder, OrderInputBuilder,
+    PageInfoObjectBuilder, PageInputBuilder, PaginationInfoObjectBuilder, PaginationInputBuilder,
+    RelatedEntityFilter, RelatedEntityFilterField, RelationInputBuilder,
 };
 
 type MetadataHashMap = std::collections::HashMap<String, serde_json::Value>;
@@ -291,6 +291,34 @@ impl Builder {
     {
         self.schema = self.schema.data(related_entity_filter);
         self
+    }
+
+    // Connect/disconnect/set operations
+    pub fn register_m2m_relation_processors<T>(
+        mut self,
+        processors: M2MRelationProcessors<T>,
+    ) -> Self
+    where
+        T: EntityTrait,
+    {
+        self.schema = self.schema.data(processors);
+        self
+    }
+
+    // Input types
+    pub fn register_m2m_relation_inputs<T, R>(&mut self, relation_names: &[(&str, &str)])
+    where
+        T: EntityTrait,
+        R: EntityTrait,
+    {
+        let relation_input_builder = RelationInputBuilder {
+            context: self.context,
+        };
+
+        for (_relation_name, input_type_name) in relation_names {
+            let input_object = relation_input_builder.relation_field_input_object::<R>(input_type_name);
+            self.inputs.push(input_object);
+        }
     }
 
     /// Used to register an SeaORM ActiveEnum to the schema
@@ -794,3 +822,156 @@ macro_rules! register_custom_mutations {
         $($builder.register_custom_mutation::<$ty>();)*
     };
 }
+
+#[macro_export]
+macro_rules! impl_m2m_relation {
+    (
+        $source:ty,
+        $related:ty,
+        $junction:ty,
+        $junction_active_model:ty,
+        source_column: $source_col:expr,
+        related_column: $related_col:expr,
+        field_name: $field_name:literal
+    ) => {
+        seaography::M2MRelationInfo {
+            field_name: $field_name.to_string(),
+            input_type_name: format!("{}{}RelationInput",
+                stringify!($source).replace("::", ""),
+                stringify!($related).replace("::", "")
+            ),
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! m2m_processor {
+    (
+        $junction:ty,
+        $junction_active_model:ty,
+        source_column: $source_col:expr,
+        related_column: $related_col:expr
+    ) => {{
+        use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, ActiveModelTrait, IntoActiveModel};
+        use seaography::{parse_relation_operations, parse_id_to_value, SeaResult, BuilderContext};
+        use async_graphql::dynamic::ObjectAccessor;
+
+        Box::new(
+            move |context: &'static BuilderContext,
+                  db: &sea_orm::DatabaseConnection,
+                  source_id: sea_orm::Value,
+                  input: &ObjectAccessor| {
+                let source_col = $source_col;
+                let related_col = $related_col;
+
+                Box::pin(async move {
+                    let ops = parse_relation_operations(context, input)?;
+
+                    if let Some(set_ids) = ops.set {
+                        <$junction>::delete_many()
+                            .filter(source_col.eq(source_id.clone()))
+                            .exec(db)
+                            .await?;
+
+                        for related_id in set_ids {
+                            let related_value = parse_id_to_value(&related_id);
+                            let mut active_model = <$junction_active_model as Default>::default();
+                            <$junction_active_model as ActiveModelTrait>::try_set(&mut active_model, source_col, source_id.clone())?;
+                            <$junction_active_model as ActiveModelTrait>::try_set(&mut active_model, related_col, related_value)?;
+                            active_model.insert(db).await?;
+                        }
+                    } else {
+                        for related_id in ops.connect {
+                            let related_value = parse_id_to_value(&related_id);
+
+                            let existing = <$junction>::find()
+                                .filter(source_col.eq(source_id.clone()))
+                                .filter(related_col.eq(related_value.clone()))
+                                .one(db)
+                                .await?;
+
+                            if existing.is_none() {
+                                let mut active_model = <$junction_active_model as Default>::default();
+                                <$junction_active_model as ActiveModelTrait>::try_set(&mut active_model, source_col, source_id.clone())?;
+                                <$junction_active_model as ActiveModelTrait>::try_set(&mut active_model, related_col, related_value)?;
+                                active_model.insert(db).await?;
+                            }
+                        }
+
+                        for related_id in ops.disconnect {
+                            let related_value = parse_id_to_value(&related_id);
+                            <$junction>::delete_many()
+                                .filter(source_col.eq(source_id.clone()))
+                                .filter(related_col.eq(related_value))
+                                .exec(db)
+                                .await?;
+                        }
+                    }
+
+                    Ok(()) as SeaResult<()>
+                })
+            },
+        ) as seaography::RelationProcessorFn
+    }};
+}
+
+#[macro_export]
+macro_rules! impl_m2m_relations {
+    (
+        Entity = $entity:ty,
+        EntityName = $entity_name:literal,
+        Relations = [
+            $(
+                {
+                    field_name: $field_name:literal,
+                    junction: $junction:ty,
+                    junction_model: $junction_model:ty,
+                    source_column: $source_col:expr,
+                    related_column: $related_col:expr $(,)?
+                }
+            ),* $(,)?
+        ]
+    ) => {
+        impl seaography::M2MRelations for $entity {
+            fn m2m_relations(_context: &'static seaography::BuilderContext) -> Vec<seaography::M2MRelationDef> {
+                vec![
+                    $(
+                        seaography::M2MRelationDef::new($field_name, $entity_name),
+                    )*
+                ]
+            }
+
+            fn m2m_processors(
+                _context: &'static seaography::BuilderContext,
+            ) -> std::collections::HashMap<String, seaography::RelationProcessorFn> {
+                let mut processors = std::collections::HashMap::new();
+                $(
+                    processors.insert(
+                        $field_name.to_string(),
+                        seaography::m2m_processor!(
+                            $junction,
+                            $junction_model,
+                            source_column: $source_col,
+                            related_column: $related_col
+                        )
+                    );
+                )*
+                processors
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! register_entity_with_m2m {
+    ($builder:expr, $module_path:ident) => {
+        seaography::register_entity!($builder, $module_path, mutation: true);
+        let m2m_inputs = seaography::generate_m2m_relation_inputs::<$module_path::Entity>($builder.context);
+        for input in m2m_inputs {
+            $builder.inputs.push(input);
+        }
+        let processors = seaography::M2MRelationProcessors::<$module_path::Entity>::from_entity($builder.context);
+        $builder = $builder.register_m2m_relation_processors(processors);
+    };
+}
+

@@ -28,3 +28,7 @@ pub use entity_input::*;
 
 pub mod active_enum_filter_input;
 pub use active_enum_filter_input::*;
+
+pub mod relation_input;
+pub use relation_input::*;
+
