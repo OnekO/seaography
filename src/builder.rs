@@ -853,7 +853,7 @@ macro_rules! m2m_processor {
         related_column: $related_col:expr
     ) => {{
         use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, ActiveModelTrait, IntoActiveModel};
-        use seaography::{parse_relation_operations, parse_id_to_value, SeaResult, BuilderContext};
+        use seaography::{parse_relation_operations, parse_id_to_value, BuilderContext};
         use async_graphql::dynamic::ObjectAccessor;
 
         Box::new(
@@ -863,14 +863,19 @@ macro_rules! m2m_processor {
                   input: &ObjectAccessor| -> std::pin::Pin<Box<dyn std::future::Future<Output = seaography::SeaResult<()>> + Send + '_>> {
                 let source_col = $source_col;
                 let related_col = $related_col;
+                
+                let ops = match parse_relation_operations(context, input) {
+                    Ok(ops) => ops,
+                    Err(e) => return Box::pin(async move { Err(e) }),
+                };
+                
+                let db = db.clone();
 
                 Box::pin(async move {
-                    let ops = parse_relation_operations(context, input)?;
-
                     if let Some(set_ids) = ops.set {
                         <$junction>::delete_many()
                             .filter(source_col.eq(source_id.clone()))
-                            .exec(db)
+                            .exec(&db)
                             .await?;
 
                         for related_id in set_ids {
@@ -878,7 +883,7 @@ macro_rules! m2m_processor {
                             let mut active_model = <$junction_active_model as Default>::default();
                             <$junction_active_model as ActiveModelTrait>::try_set(&mut active_model, source_col, source_id.clone())?;
                             <$junction_active_model as ActiveModelTrait>::try_set(&mut active_model, related_col, related_value)?;
-                            active_model.insert(db).await?;
+                            active_model.insert(&db).await?;
                         }
                     } else {
                         for related_id in ops.connect {
@@ -887,14 +892,14 @@ macro_rules! m2m_processor {
                             let existing = <$junction>::find()
                                 .filter(source_col.eq(source_id.clone()))
                                 .filter(related_col.eq(related_value.clone()))
-                                .one(db)
+                                .one(&db)
                                 .await?;
 
                             if existing.is_none() {
                                 let mut active_model = <$junction_active_model as Default>::default();
                                 <$junction_active_model as ActiveModelTrait>::try_set(&mut active_model, source_col, source_id.clone())?;
                                 <$junction_active_model as ActiveModelTrait>::try_set(&mut active_model, related_col, related_value)?;
-                                active_model.insert(db).await?;
+                                active_model.insert(&db).await?;
                             }
                         }
 
@@ -903,7 +908,7 @@ macro_rules! m2m_processor {
                             <$junction>::delete_many()
                                 .filter(source_col.eq(source_id.clone()))
                                 .filter(related_col.eq(related_value))
-                                .exec(db)
+                                .exec(&db)
                                 .await?;
                         }
                     }

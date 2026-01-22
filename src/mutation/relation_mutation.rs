@@ -76,7 +76,7 @@ pub type RelationProcessorFn = Box<
             &'a sea_orm::DatabaseConnection,
             sea_orm::Value,
             &'a ObjectAccessor<'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SeaResult<()>> + Send + 'a>>
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SeaResult<()>> + Send + 'static>>
         + Send
         + Sync,
 >;
