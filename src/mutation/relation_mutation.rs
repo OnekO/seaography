@@ -203,6 +203,19 @@ where
         })
 }
 
+pub async fn process_m2m_relations<E>(
+    context: &'static BuilderContext,
+    db: &sea_orm::DatabaseConnection,
+    source_id: sea_orm::Value,
+    input_object: &ObjectAccessor<'_>,
+) -> SeaResult<()>
+where
+    E: EntityTrait + M2MRelations,
+{
+    let processors = M2MRelationProcessors::<E>::from_entity(context);
+    processors.process_relations(context, db, source_id, input_object).await
+}
+
 pub struct RelationMutationProcessor {
     pub context: &'static BuilderContext,
 }

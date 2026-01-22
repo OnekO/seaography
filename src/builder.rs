@@ -13,7 +13,7 @@ use crate::{
     CustomUnion, EdgeObjectBuilder, EntityCreateBatchMutationBuilder,
     EntityCreateOneMutationBuilder, EntityDeleteMutationBuilder, EntityInputBuilder,
     EntityObjectBuilder, EntityQueryFieldBuilder, EntityUpdateMutationBuilder, FilterInputBuilder,
-    FilterTypesMapHelper, HavingInputBuilder, M2MRelationProcessors, M2MRelations,
+    FilterTypesMapHelper, HavingInputBuilder, M2MRelationProcessors,
     OffsetInputBuilder, OneToManyLoader, OneToOneLoader, OrderByEnumBuilder, OrderInputBuilder,
     PageInfoObjectBuilder, PageInputBuilder, PaginationInfoObjectBuilder, PaginationInputBuilder,
     RelatedEntityFilter, RelatedEntityFilterField, RelationInputBuilder,
@@ -241,6 +241,61 @@ impl Builder {
             context: self.context,
         };
         let update_mutation = entity_update_mutation_builder.to_field::<T, A>();
+        self.mutations.push(update_mutation);
+
+        let entity_delete_mutation_builder = EntityDeleteMutationBuilder {
+            context: self.context,
+        };
+        let delete_mutation = entity_delete_mutation_builder.to_field::<T, A>();
+        self.mutations.push(delete_mutation);
+    }
+
+    pub fn register_entity_mutations_with_m2m<T, A>(&mut self)
+    where
+        T: EntityTrait + crate::M2MRelations,
+        <T as EntityTrait>::Model: Sync + sea_orm::ModelTrait<Entity = T>,
+        <T as EntityTrait>::Model: IntoActiveModel<A>,
+        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + Send + 'static,
+    {
+        let entity_object_builder = EntityObjectBuilder {
+            context: self.context,
+        };
+        let basic_entity_object = entity_object_builder.to_basic_object::<T>();
+        self.outputs.push(basic_entity_object);
+
+        let entity_input_builder = EntityInputBuilder {
+            context: self.context,
+        };
+
+        let entity_insert_input_object = entity_input_builder.insert_input_object::<T>();
+        let entity_update_input_object = entity_input_builder.update_input_object::<T>();
+        
+        let entity_insert_input_object = crate::add_m2m_fields_to_input::<T>(self.context, entity_insert_input_object);
+        let entity_update_input_object = crate::add_m2m_fields_to_input::<T>(self.context, entity_update_input_object);
+        
+        self.inputs
+            .extend([entity_insert_input_object, entity_update_input_object]);
+
+        let m2m_inputs = crate::generate_m2m_relation_inputs::<T>(self.context);
+        self.inputs.extend(m2m_inputs);
+
+        let entity_create_one_mutation_builder = EntityCreateOneMutationBuilder {
+            context: self.context,
+        };
+        let create_one_mutation = entity_create_one_mutation_builder.to_field_with_m2m::<T, A>();
+        self.mutations.push(create_one_mutation);
+
+        let entity_create_batch_mutation_builder: EntityCreateBatchMutationBuilder =
+            EntityCreateBatchMutationBuilder {
+                context: self.context,
+            };
+        let create_batch_mutation = entity_create_batch_mutation_builder.to_field::<T, A>();
+        self.mutations.push(create_batch_mutation);
+
+        let entity_update_mutation_builder = EntityUpdateMutationBuilder {
+            context: self.context,
+        };
+        let update_mutation = entity_update_mutation_builder.to_field_with_m2m::<T, A>();
         self.mutations.push(update_mutation);
 
         let entity_delete_mutation_builder = EntityDeleteMutationBuilder {
@@ -863,12 +918,12 @@ macro_rules! m2m_processor {
                   input: &ObjectAccessor| -> std::pin::Pin<Box<dyn std::future::Future<Output = seaography::SeaResult<()>> + Send + '_>> {
                 let source_col = $source_col;
                 let related_col = $related_col;
-                
+
                 let ops = match parse_relation_operations(context, input) {
                     Ok(ops) => ops,
                     Err(e) => return Box::pin(async move { Err(e) }),
                 };
-                
+
                 let db = db.clone();
 
                 Box::pin(async move {
@@ -970,11 +1025,8 @@ macro_rules! impl_m2m_relations {
 #[macro_export]
 macro_rules! register_entity_with_m2m {
     ($builder:expr, $module_path:ident) => {
-        seaography::register_entity!($builder, $module_path, mutation: true);
-        let m2m_inputs = seaography::generate_m2m_relation_inputs::<$module_path::Entity>($builder.context);
-        for input in m2m_inputs {
-            $builder.inputs.push(input);
-        }
+        seaography::register_entity!($builder, $module_path, mutation: false);
+        $builder.register_entity_mutations_with_m2m::<$module_path::Entity, $module_path::ActiveModel>();
         let processors = seaography::M2MRelationProcessors::<$module_path::Entity>::from_entity($builder.context);
         $builder = $builder.register_m2m_relation_processors(processors);
     };

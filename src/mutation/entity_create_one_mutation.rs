@@ -1,12 +1,13 @@
 use async_graphql::dynamic::{Field, FieldFuture, FieldValue, InputValue, ObjectAccessor, TypeRef};
 use sea_orm::{
     ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel, Iterable,
-    PrimaryKeyToColumn, PrimaryKeyTrait,
+    PrimaryKeyToColumn, PrimaryKeyTrait, ModelTrait,
 };
 
 use crate::{
     guard_error, BuilderContext, DatabaseContext, EntityInputBuilder, EntityObjectBuilder,
-    EntityQueryFieldBuilder, GuardAction, OperationType, UserContext,
+    EntityQueryFieldBuilder, GuardAction, M2MRelations, M2MRelationProcessors, OperationType,
+    UserContext,
 };
 
 /// The configuration structure of EntityCreateOneMutationBuilder
@@ -135,6 +136,92 @@ impl EntityCreateOneMutationBuilder {
             TypeRef::named_nn(entity_input_builder.insert_type_name::<T>()),
         ))
     }
+
+    pub fn to_field_with_m2m<T, A>(&self) -> Field
+    where
+        T: EntityTrait + M2MRelations,
+        <T as EntityTrait>::Model: Sync + ModelTrait<Entity = T>,
+        <T as EntityTrait>::Model: IntoActiveModel<A>,
+        A: ActiveModelTrait<Entity = T> + sea_orm::ActiveModelBehavior + Send + 'static,
+    {
+        let entity_input_builder = EntityInputBuilder {
+            context: self.context,
+        };
+        let entity_object_builder = EntityObjectBuilder {
+            context: self.context,
+        };
+
+        let context = self.context;
+
+        let object_name: String = entity_object_builder.type_name::<T>();
+        let hooks = &self.context.hooks;
+
+        Field::new(
+            self.type_name::<T>(),
+            TypeRef::named_nn(entity_object_builder.basic_type_name::<T>()),
+            move |ctx| {
+                let object_name = object_name.clone();
+                FieldFuture::new(async move {
+                    if let GuardAction::Block(reason) =
+                        hooks.entity_guard(&ctx, &object_name, OperationType::Create)
+                    {
+                        return Err(guard_error(reason, "Entity guard triggered."));
+                    }
+
+                    let entity_input_builder = EntityInputBuilder { context };
+                    let entity_object_builder = EntityObjectBuilder { context };
+                    let value_accessor = ctx
+                        .args
+                        .try_get(&context.entity_create_one_mutation.data_field)?;
+                    let input_object = &value_accessor.object()?;
+
+                    for (column, _) in input_object.iter() {
+                        if let GuardAction::Block(reason) =
+                            hooks.field_guard(&ctx, &object_name, column, OperationType::Create)
+                        {
+                            return Err(guard_error(reason, "Field guard triggered."));
+                        }
+                    }
+
+                    let db = ctx
+                        .data::<DatabaseConnection>()?
+                        .restricted(ctx.data_opt::<UserContext>())?;
+
+                    let mut active_model = prepare_active_model::<T, A>(
+                        &entity_input_builder,
+                        &entity_object_builder,
+                        input_object,
+                    )?;
+
+                    if let GuardAction::Block(reason) = hooks.before_active_model_save(
+                        &ctx,
+                        &object_name,
+                        OperationType::Create,
+                        &mut active_model,
+                    ) {
+                        return Err(guard_error(reason, "Blocked by before_active_model_save."));
+                    }
+
+                    let result = active_model.insert(&db).await?;
+
+                    let source_id = get_primary_key_value::<T>(&result);
+                    let processors = M2MRelationProcessors::<T>::from_entity(context);
+                    processors.process_relations(context, &db, source_id, input_object).await
+                        .map_err(|e| async_graphql::Error::new(format!("M2M relation error: {}", e)))?;
+
+                    hooks
+                        .entity_watch(&ctx, &object_name, OperationType::Create)
+                        .await;
+
+                    Ok(Some(FieldValue::owned_any(result)))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            &context.entity_create_one_mutation.data_field,
+            TypeRef::named_nn(entity_input_builder.insert_type_name::<T>()),
+        ))
+    }
 }
 
 pub fn prepare_active_model<T, A>(
@@ -172,3 +259,20 @@ where
 
     Ok(active_model)
 }
+
+pub fn get_primary_key_value<T>(model: &T::Model) -> sea_orm::Value
+where
+    T: EntityTrait,
+    T::Model: ModelTrait<Entity = T>,
+{
+    use sea_orm::Iterable;
+
+    if let Some(pk) = T::PrimaryKey::iter().next() {
+        let col = <T::PrimaryKey as PrimaryKeyToColumn>::into_column(pk);
+        let values = model.get(col);
+        return values;
+    }
+
+    sea_orm::Value::Int(Some(0))
+}
+
