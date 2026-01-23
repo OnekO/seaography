@@ -269,10 +269,10 @@ impl Builder {
 
         let entity_insert_input_object = entity_input_builder.insert_input_object::<T>();
         let entity_update_input_object = entity_input_builder.update_input_object::<T>();
-        
+
         let entity_insert_input_object = crate::add_m2m_fields_to_input::<T>(self.context, entity_insert_input_object);
         let entity_update_input_object = crate::add_m2m_fields_to_input::<T>(self.context, entity_update_input_object);
-        
+
         self.inputs
             .extend([entity_insert_input_object, entity_update_input_object]);
 
@@ -908,7 +908,7 @@ macro_rules! m2m_processor {
         related_column: $related_col:expr
     ) => {{
         use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, ActiveModelTrait, IntoActiveModel};
-        use seaography::{parse_relation_operations, parse_id_to_value, BuilderContext};
+        use seaography::{parse_relation_operations, parse_id_for_column, BuilderContext};
         use async_graphql::dynamic::ObjectAccessor;
 
         Box::new(
@@ -934,7 +934,7 @@ macro_rules! m2m_processor {
                             .await?;
 
                         for related_id in set_ids {
-                            let related_value = parse_id_to_value(&related_id);
+                            let related_value = parse_id_for_column(related_col, &related_id)?;
                             let mut active_model = <$junction_active_model as Default>::default();
                             <$junction_active_model as ActiveModelTrait>::try_set(&mut active_model, source_col, source_id.clone())?;
                             <$junction_active_model as ActiveModelTrait>::try_set(&mut active_model, related_col, related_value)?;
@@ -942,7 +942,7 @@ macro_rules! m2m_processor {
                         }
                     } else {
                         for related_id in ops.connect {
-                            let related_value = parse_id_to_value(&related_id);
+                            let related_value = parse_id_for_column(related_col, &related_id)?;
 
                             let existing = <$junction>::find()
                                 .filter(source_col.eq(source_id.clone()))
@@ -959,7 +959,7 @@ macro_rules! m2m_processor {
                         }
 
                         for related_id in ops.disconnect {
-                            let related_value = parse_id_to_value(&related_id);
+                            let related_value = parse_id_for_column(related_col, &related_id)?;
                             <$junction>::delete_many()
                                 .filter(source_col.eq(source_id.clone()))
                                 .filter(related_col.eq(related_value))
