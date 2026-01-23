@@ -959,7 +959,7 @@ macro_rules! m2m_processor {
                         }
 
                         for related_id in ops.disconnect {
-                            let related_value = parse_id_for_column(related_col, &related_id)?;
+                            let related_value = parse_id_for_column(&related_col, &related_id)?;
                             <$junction>::delete_many()
                                 .filter(source_col.eq(source_id.clone()))
                                 .filter(related_col.eq(related_value))

@@ -78,7 +78,6 @@ where
         ColumnType::BigUnsigned => Ok(sea_orm::Value::BigUnsigned(Some(raw.parse()?))),
         ColumnType::SmallUnsigned => Ok(sea_orm::Value::SmallUnsigned(Some(raw.parse()?))),
         ColumnType::TinyUnsigned => Ok(sea_orm::Value::TinyUnsigned(Some(raw.parse()?))),
-        // Fallback for strings and anything else
         _ => Ok(sea_orm::Value::String(Some(raw.to_string().into()))),
     }
 }
